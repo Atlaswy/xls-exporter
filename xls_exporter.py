@@ -37,22 +37,21 @@ class Types(object):
     array_t = 'array'
     embedded_array_t = 'embedded_array'
     dict_t = 'dict'
-    vector_t = 'vector'
-    vector_array_t = 'vector_array'
+    tuple_t = 'tuple'
 
 # 直接求值类型
-value_types = (Types.int_t,Types.float_t,Types.bool_t,Types.string_t,Types.vector_t,Types.vector_array_t)
+value_types = (Types.int_t,Types.float_t,Types.bool_t,Types.string_t,Types.tuple_t)
 empty_values = ('', None)
 
 # 正则
 array_pat = re.compile(r'^(\w+)\[(\d+)\]$')
-embedded_array_pat = re.compile(r'^(\w+)\[\]$')
+embedded_array_pat = re.compile(r'^(.+)\[\]$')
 default_option_pat = re.compile(r'default\s*=\s*(.+)$')
 setting_pat = re.compile(r'//\$(.+)$')
-vector_pat = re.compile(r'(\([^\)]*\))')
-vector_array_pat = re.compile(r'(\([^\)]*\)\[\])')
+bracket_pat = re.compile(r'\((.*?)\)')
+tuple_pat = re.compile(r'\(((\w+:)?[a-z]+,)+(\w+:)?[a-z]+\)')
 
-class TypeTree(object):
+class TypeTree(object): 
     def __init__(self, type):
         assert type,type
         self.type = type
@@ -63,11 +62,13 @@ class TypeTree(object):
         self.default = None
         self.value = None
         self.elem_type = None # only for embedded array
+        self.elem_count = None
 
     def set_cursor(self, sheet_name, col):
         self.cursor = (sheet_name, col)
 
     def add_member(self, key, member):
+        assert isinstance(member, TypeTree)
         self.members.append((key,member))
 
     def get_member(self, member_name):
@@ -82,11 +83,10 @@ class TypeTree(object):
         if m:
             self.default = m.group(1)
 
-    def set_embedded_type(self, elem_type):
+    def set_embedded_type(self, elem_type, elem_count=None):
+        assert isinstance(elem_type, TypeTree)
         self.elem_type = elem_type
-
-    def set_vector_match(self, vector_match):
-        self.vector_match = vector_match
+        self.elem_count = elem_count
 
     # 是否唯一项,不允许出现重复值
     def is_unique(self):
@@ -100,7 +100,10 @@ class TypeTree(object):
         def to_str_recursion(tree, ident):
             s = ''
             if tree.type == Types.embedded_array_t:
-                s += '%s[]' % (tree.elem_type)
+                if self.elem_count is not None:
+                    s += '%s[%d]' % (str(tree.elem_type).rstrip('\n'), self.elem_count)
+                else:
+                    s += '%s[]' % (str(tree.elem_type).rstrip('\n'))
             else:
                 s += tree.type
             if tree.cursor:
@@ -135,10 +138,9 @@ class Formatter(object):
             return self.as_bool(value_tree, ident)
         elif type == Types.string_t:
             return self.as_string(value_tree, ident)
-        elif type == Types.vector_t:
-            return self.as_vector(value_tree, ident)
-        elif type == Types.vector_array_t:
-            return self.as_vector_array(value_tree, ident)
+        elif type == Types.tuple_t:
+            return self.as_tuple(value_tree, ident)
+
     def as_struct(self, value_tree, ident):
         s = '{'
         if ident == 0: s += '\n'
@@ -173,23 +175,12 @@ class Formatter(object):
         return add_quote(value_tree.value)
     def as_nil(self, value_tree, ident):
         return 'None'
-    def as_vector(self, value_tree, ident):
-        s = '{'
-        if ident == 0: s += '\n'
-        for (k,m) in value_tree.members:
-            s += '%s:%s,' % (k, self.as_any(m, ident+1))
-            if ident == 0: s += '\n'
-        s += '}'
-    def as_vector_array(self, value_tree, ident):
-        s = '{'
-        if ident == 0: s += '\n'
-        for (k,m) in value_tree.members:
-            s += '%s:%s,' % (k, self.as_any(m, ident+1))
-            if ident == 0: s += '\n'
-        s += '}'
+    def as_tuple(self, value_tree, ident):
+        return '{%s}'%(value_tree.value)
 
 class ValueTree(object):
     def __init__(self, type_tree):
+        assert isinstance(type_tree, TypeTree)
         self.type_tree = type_tree
         self.value = None
         self.members = []
@@ -198,6 +189,31 @@ class ValueTree(object):
 
     def add_member(self, key, member):
         self.members.append((key, member))
+
+    def get_member(self, key):
+        for (key,m) in self.members:
+            if key == member_name:
+                return m
+
+    def parseValue(self,text,treeType):
+        reValue = None
+        if text in empty_values:
+            reValue = None
+        elif treeType == Types.int_t:
+            reValue = to_int(text)
+        elif treeType == Types.float_t:
+            reValue = float(text)
+        elif treeType == Types.bool_t:
+            lower_str = str(to_int(text)).lower()
+            if lower_str in ('0', 'false'):
+                reValue = False
+            elif lower_str in ('1', 'true'):
+                reValue = True
+            else:
+                raise ValueError
+        elif treeType == Types.string_t:
+            reValue = text
+        return reValue
 
     def eval_value(self, text,row):
         (sheet_name, col) = self.type_tree.cursor
@@ -208,47 +224,52 @@ class ValueTree(object):
             # 将xls单元格文本转换为内部表示值
             treeType = self.type_tree.type
             if treeType in value_types:
-                if text in empty_values:
-                    self.value = None
-                elif treeType == Types.int_t:
-                    self.value = to_int(text)
-                elif treeType == Types.float_t:
-                    self.value = float(text)
-                elif treeType == Types.bool_t:
-                    lower_str = str(to_int(text)).lower()
-                    if lower_str in ('0', 'false'):
-                        self.value = False
-                    elif lower_str in ('1', 'true'):
-                        self.value = True
-                    else:
-                        raise ValueError
-                elif treeType == Types.string_t:
-                    self.value = text
-                elif (treeType == Types.vector_t) or (treeType == Types.vector_array_t):
-                    if not self.checkVectorValue(self.type_tree.vector_match, text):
-                        eval_error('表:%s,列:%s,行:%s,填写了跟定义类型(%s)不一致的值:%s' % (sheet_name, to_xls_col(col), to_xls_row(row),treeType,text))
-                    self.value = text
+                if treeType in (Types.int_t,Types.float_t,Types.bool_t,Types.string_t):
+                    self.value = self.parseValue(text,treeType)
+                elif treeType == Types.tuple_t:
+                    values = text.replace("(", "").replace(")", "").split(",")
+                    reValue = []
+                    elemType = self.type_tree.elem_type.type
+                    for parseTxt in values:
+                        if parseTxt.find(":") > 0:
+                            parseValues = parseTxt.split(":")
+                            parseV = str(self.parseValue(parseValues[1],elemType))
+                            reValue.append('%s=%s'%(parseValues[0],parseV))
+                        else:
+                            parseV = str(self.parseValue(parseTxt,elemType))
+                            reValue.append(parseV)
+                    self.value = '%s' % (','.join(reValue))
                 else:
                     raise ValueError
             elif treeType == Types.embedded_array_t: # 内嵌数组
                 arr = str(text).split(',')
+                if self.type_tree.elem_type.type == Types.tuple_t:
+                    m = bracket_pat.findall(str(text))
+                    arr = []
+                    for x in m:
+                        arr.append(x)
                 size_arr = len(arr)
+                
                 # 从后往前遍历，找到最后一个有效下标，用于过滤尾部空项
                 last_valid_index = size_arr-1
                 for v in arr[::-1]:
                     if v != '' and v is not None:
                         break
                     last_valid_index -= 1
+
+                if self.type_tree.elem_count is not None and size_arr != self.type_tree.elem_count:
+                    eval_error('%d != %d' % (size_arr, self.type_tree.elem_count));
+
                 # 遍历至最后一个有效下标为止
                 i = 0
                 for v in arr[:last_valid_index+1]:
-                    elem_member_type = TypeTree(self.type_tree.elem_type)
+                    elem_member_type = self.type_tree.elem_type
                     elem_member_type.set_cursor(*self.type_tree.cursor)
                     elem_value_tree = ValueTree(elem_member_type)
                     elem_value_tree.eval_value(v,row)
                     self.add_member(i, elem_value_tree)
                     i += 1
-        except ValueError as e:
+        except Exception  as e:
             eval_error('表:%s,列:%s,行:%s,填写了跟定义类型(%s)不一致的值:%s\ndetail:%s' % (sheet_name, to_xls_col(col), to_xls_row(row), self.type_tree.type, text, str(e)))
 
     def eval(self, row, row_data):
@@ -274,50 +295,6 @@ class ValueTree(object):
             return True
         else:
             return self.value is None
-
-    def checkVectorValue(self,matchStr,valueStr):
-        a=r'\(.*\)'
-        vecTypes = re.sub(a,'',matchStr.group(1)).split("[")[0].split(",")
-        vecValuses = re.sub(a,'',valueStr).split("[")[0].split(",")
-        for idx in range(len(vecTypes)):
-            vType = vecTypes[idx]
-            if vType.find(":") > 0:
-                vType = vType.split(":")[1]
-            vValue = vecValuses[idx]
-            if vValue.find(":") > 0:
-                vValue = vValue.split(":")[1]
-            if (vType == Types.int_t) and (not self.is_int(vValue)):
-                return False
-            elif (vType == Types.float_t) and (not self.is_float(vValue)):
-                 return False
-            elif  (vType == Types.bool_t) and not self.is_bool(vValue):
-                return False
-        return True
-
-    def is_float(self,s):
-        try:
-            float(s)
-            return True
-        except ValueError:
-            pass
-        return False
-
-    def is_int(self,s):
-        try:
-            int(s)
-            return True
-        except ValueError:
-            pass
-        return False
-
-    def is_bool(self,s):
-        try:
-            intV =  int(s)
-            if str(intV).lower() in ('0','1','false','true'):
-                return True
-        except ValueError:
-            pass
-        return False
 
 # 将整数转换为excel的列
 def to_xls_col(num):
@@ -404,30 +381,31 @@ def build_type_tree(sheet_name, sheet_cells):
         decl_type = sheet_cells[1][1][col].value
         path = sheet_cells[2][1][col].value
         elem_type = decl_type
-        vector_type = None
 
         m = embedded_array_pat.match(decl_type)
         if m:
             decl_type = Types.embedded_array_t
             elem_type = m.group(1)
-        else:
-            m = vector_array_pat.match(decl_type)
-            if m:
-                vector_type = decl_type
-                decl_type = Types.vector_array_t
-                elem_type = Types.vector_array_t
-            else:
-                m = vector_pat.match(decl_type)
-                if m:
-                    vector_type = decl_type
-                    decl_type = Types.vector_t
-                    elem_type = Types.vector_t
-            if m and (not checkVectorType(decl_type)):
-                # 声明了未知数据类型
-                parse_error('表:%s,列:%s,声明了未知数据类型%s' % (sheet_name, to_xls_col(col), sheet_cells[1][1][col].value))
+            m1 = tuple_pat.match(elem_type)
+            if m1:
+                types = elem_type.lstrip('(').rstrip(')')
+                splited = types.split(',')
+                elemType = splited[0]
+                for eType in splited:
+                    if elemType != eType:
+                        parse_error('表:%s,列:%s,声明了不合法的数据类型%s' % (sheet_name, to_xls_col(col), eType))
+                tuple_tree = TypeTree(Types.tuple_t)
+                tuple_tree.set_embedded_type(TypeTree(elemType),len(splited))
+                elem_type = tuple_tree
 
+        if isinstance(elem_type, strings):
+            elem_type = TypeTree(elem_type)
+
+        checkType = decl_type
+        if decl_type == Types.embedded_array_t:
+            checkType = elem_type.type
         # 检查数据类型
-        if elem_type not in value_types:
+        if checkType not in value_types:
             # 声明了未知数据类型
             parse_error('表:%s,列:%s,声明了未知数据类型%s' % (sheet_name, to_xls_col(col), decl_type))
 
@@ -457,8 +435,6 @@ def build_type_tree(sheet_name, sheet_cells):
         field_member.set_option(option)
         if decl_type == Types.embedded_array_t:
             field_member.set_embedded_type(elem_type)
-        elif (decl_type == Types.vector_array_t) or (decl_type == Types.vector_t):
-            field_member.set_vector_match(m)
 
         # 检查重复定义域
         if parent.get_member(field_name) is not None:
@@ -466,16 +442,6 @@ def build_type_tree(sheet_name, sheet_cells):
         parent.add_member(field_name, field_member)
     # todo:还需要检查数组元素是否同构???
     return type_tree
-
-def checkVectorType(matchStr):
-    vecTypes = matchStr.strip('(').strip(')').split("[")[0].split(",")
-    for vt in vecTypes:
-        if vt.find(":") > 0:
-            vt = vt.split(":")[1]
-        if vt not in value_types:
-            parse_error('checkVectorType： %s，value_types：%s,matchStr:%s' % (vt,value_types,matchStr))
-            return False
-    return True
 
 # 检查类型树之间是否存在结构冲突
 def check_type_conflicet(lhs_key, lhs, rhs_key, rhs):
@@ -653,9 +619,10 @@ if __name__ == '__main__':
             parse(file, verbose=False)
         except Exception as e:
             error('%s error:%s' % (file, str(e)))
-    protect_parse('example/define.xlsx')
-    protect_parse('example/example.xlsx')
-    protect_parse('example/empty.xlsx')
-    protect_parse('example/list.xlsx')
-    protect_parse('example/error.xlsx')
-    protect_parse('example/invalid-file-format.xlsx')
+    # protect_parse('example/define.xlsx')
+    # protect_parse('example/example.xlsx')
+    # protect_parse('example/empty.xlsx')
+    # protect_parse('example/list.xlsx')
+    # protect_parse('example/error.xlsx')
+    # protect_parse('example/invalid-file-format.xlsx')
+    # print(parse('example/Skills.xlsx', verbose=True))

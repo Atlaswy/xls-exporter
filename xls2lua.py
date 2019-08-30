@@ -74,18 +74,8 @@ class LuaFormatter(xls_exporter.Formatter):
         return add_quote(value_tree.value)
     def as_nil(self, value_tree, ident):
         return 'nil'
-    def as_vector(self, value_tree, ident):
-        match = vector_pat.match(value_tree.value)
-        vecValues = match.group(1).strip('(').strip(')').replace(":", "=").split(",")
-        return '{%s}' % (','.join(vecValues))
-    def as_vector_array(self, value_tree, ident):
-        lst = []
-        idx = 0
-        for match in vector_pat.findall(value_tree.value):
-            vecValues = match.strip('(').strip(')').replace(":", "=").split(",")
-            idx = idx + 1
-            lst.append('[%d]={%s}' % (idx,(','.join(vecValues))) )
-        return '{%s}' % (','.join(lst))
+    def as_tuple(self, value_tree, ident):
+        return '{%s}'%(value_tree.value)
 
 if __name__ == '__main__':
     sys.exit(entry.main(sys.argv, 'lua', LuaFormatter()))
