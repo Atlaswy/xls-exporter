@@ -53,7 +53,6 @@ tuple_pat = re.compile(r'\(((\w+:)?[a-z]+,)+(\w+:)?[a-z]+\)')
 
 class TypeTree(object): 
     def __init__(self, type):
-        assert type,type
         self.type = type
         self.members = []
         self.cursor = None
@@ -381,7 +380,9 @@ def build_type_tree(sheet_name, sheet_cells):
         decl_type = sheet_cells[1][1][col].value
         path = sheet_cells[2][1][col].value
         elem_type = decl_type
-
+        #空格略过
+        if  elem_type == '':
+            break
         m = embedded_array_pat.match(decl_type)
         if m:
             decl_type = Types.embedded_array_t

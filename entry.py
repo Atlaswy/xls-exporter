@@ -21,10 +21,19 @@ def main(argv, file_extention, formatter):
         try:
             value_tree = xls_exporter.parse(input_file, verbose=True)
             out = value_tree.tostring(formatter=formatter)
+            
             # 输出文件
-            with codecs.open(output_file, "w+", "utf-8") as f:
+            paths = output_file.split('\\')
+            fileName = str(paths[-1])
+            fileParent = str(paths[-2])
+            outPath = output_file.replace(fileParent,file_extention).replace(fileName,'')
+            fullpath = os.path.join(outPath,fileName)
+            exist = os.path.exists(outPath)
+            if not exist:
+                os.makedirs(outPath)
+            with codecs.open(fullpath, "w+", "utf-8") as f:
                 f.write(out)
-            print('write file:%s' % os.path.abspath(output_file))
+            print('write file:%s' % os.path.abspath(outPath))
         except (xls_exporter.ParseError) as e:
             error(str(e))
             return 3
